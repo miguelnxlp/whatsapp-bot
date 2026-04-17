@@ -29,8 +29,8 @@ app.post('/webhook', async (req, res) => {
       const text = msg.text?.body;
       if (!text) continue;
 
-      let { data: conv } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
-      if (!conv) {
+      let { data: conv, error } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
+      if (error || !conv) {
         const { data: newConv } = await supabase.from('conversations').insert([{ phone_number: phone }]).select().single();
         conv = newConv;
       }
