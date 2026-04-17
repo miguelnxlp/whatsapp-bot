@@ -2,7 +2,16 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const db = require('./db');
+
+let db;
+try {
+  db = require('./db');
+  console.log('✅ Database initialized');
+} catch (error) {
+  console.error('❌ Database error:', error.message);
+  process.exit(1);
+}
+
 const { handleIncomingMessage, sendManualMessage } = require('./handlers/whatsapp');
 
 const app = express();
