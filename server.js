@@ -61,15 +61,15 @@ app.post('/webhook', async (req, res) => {
 });
 
 // API: Get all conversations
-app.get('/api/conversations', async (req, res) => {
+app.get('/api/conversations', (req, res) => {
   try {
-    const convs = await Promise.resolve(all(`
+    const convs = all(`
       SELECT c.id, c.phone_number, c.status, c.bot_paused, c.created_at, c.updated_at, COUNT(m.id) as message_count
       FROM conversations c
       LEFT JOIN messages m ON c.id = m.conversation_id
       GROUP BY c.id
       ORDER BY c.updated_at DESC
-    `));
+    `);
 
     res.json(convs);
   } catch (error) {
@@ -78,13 +78,13 @@ app.get('/api/conversations', async (req, res) => {
 });
 
 // API: Get conversation messages
-app.get('/api/conversations/:id/messages', async (req, res) => {
+app.get('/api/conversations/:id/messages', (req, res) => {
   try {
-    const messages = await Promise.resolve(all(`
+    const messages = all(`
       SELECT * FROM messages
       WHERE conversation_id = ?
       ORDER BY created_at ASC
-    `, [parseInt(req.params.id)]));
+    `, [parseInt(req.params.id)]);
 
     res.json(messages);
   } catch (error) {
@@ -93,10 +93,10 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
 });
 
 // API: Pause/Resume bot
-app.post('/api/conversations/:id/pause', async (req, res) => {
+app.post('/api/conversations/:id/pause', (req, res) => {
   try {
     const { paused } = req.body;
-    await Promise.resolve(run('UPDATE conversations SET bot_paused = ? WHERE id = ?', [paused ? 1 : 0, parseInt(req.params.id)]));
+    run('UPDATE conversations SET bot_paused = ? WHERE id = ?', [paused ? 1 : 0, parseInt(req.params.id)]);
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -107,7 +107,7 @@ app.post('/api/conversations/:id/pause', async (req, res) => {
 app.post('/api/conversations/:id/send', async (req, res) => {
   try {
     const { message } = req.body;
-    const conv = await Promise.resolve(get('SELECT phone_number FROM conversations WHERE id = ?', [parseInt(req.params.id)]));
+    const conv = get('SELECT phone_number FROM conversations WHERE id = ?', [parseInt(req.params.id)]);
 
     if (!conv) {
       return res.status(404).json({ error: 'Conversation not found' });
@@ -121,18 +121,18 @@ app.post('/api/conversations/:id/send', async (req, res) => {
 });
 
 // API: Get reports
-app.get('/api/reports', async (req, res) => {
+app.get('/api/reports', (req, res) => {
   try {
-    const totalConvs = await Promise.resolve(get('SELECT COUNT(*) as count FROM conversations'));
-    const totalMessages = await Promise.resolve(get('SELECT COUNT(*) as count FROM messages'));
-    const activeConvs = await Promise.resolve(get('SELECT COUNT(*) as count FROM conversations WHERE status = ?', ['active']));
+    const totalConvs = get('SELECT COUNT(*) as count FROM conversations');
+    const totalMessages = get('SELECT COUNT(*) as count FROM messages');
+    const activeConvs = get('SELECT COUNT(*) as count FROM conversations WHERE status = ?', ['active']);
 
-    const messagesByDay = await Promise.resolve(all(`
+    const messagesByDay = all(`
       SELECT DATE(created_at) as date, COUNT(*) as count
       FROM messages
       GROUP BY DATE(created_at)
       ORDER BY date DESC LIMIT 7
-    `));
+    `);
 
     res.json({
       totalConversations: totalConvs?.count || 0,
@@ -148,9 +148,14 @@ app.get('/api/reports', async (req, res) => {
 async function start() {
   try {
     await initDB();
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`📊 Dashboard: http://localhost:${PORT}`);
+      console.log('✅ Server is ready to accept requests');
+    });
+
+    server.on('error', (err) => {
+      console.error('Server error:', err);
     });
   } catch (error) {
     console.error('Failed to start server:', error);

@@ -33,14 +33,14 @@ async function sendMessage(phoneNumber, message) {
 
 async function handleIncomingMessage(phoneNumber, message) {
   try {
-    let conv = await get('SELECT id, bot_paused FROM conversations WHERE phone_number = ?', [phoneNumber]);
+    let conv = get('SELECT id, bot_paused FROM conversations WHERE phone_number = ?', [phoneNumber]);
 
     if (!conv) {
-      const result = await run('INSERT INTO conversations (phone_number) VALUES (?)', [phoneNumber]);
+      const result = run('INSERT INTO conversations (phone_number) VALUES (?)', [phoneNumber]);
       conv = { id: result.id, bot_paused: 0 };
     }
 
-    await run(
+    run(
       `INSERT INTO messages (conversation_id, sender, message) VALUES (?, ?, ?)`,
       [conv.id, 'user', message]
     );
@@ -49,7 +49,7 @@ async function handleIncomingMessage(phoneNumber, message) {
       const aiResponse = await getAIResponse(phoneNumber, message);
       if (aiResponse) {
         await sendMessage(phoneNumber, aiResponse);
-        await run(
+        run(
           `INSERT INTO messages (conversation_id, sender, message) VALUES (?, ?, ?)`,
           [conv.id, 'assistant', aiResponse]
         );
@@ -65,9 +65,9 @@ async function handleIncomingMessage(phoneNumber, message) {
 
 async function sendManualMessage(phoneNumber, message) {
   const result = await sendMessage(phoneNumber, message);
-  const conv = await get('SELECT id FROM conversations WHERE phone_number = ?', [phoneNumber]);
+  const conv = get('SELECT id FROM conversations WHERE phone_number = ?', [phoneNumber]);
   if (conv) {
-    await run(
+    run(
       `INSERT INTO messages (conversation_id, sender, message) VALUES (?, ?, ?)`,
       [conv.id, 'agent', message]
     );

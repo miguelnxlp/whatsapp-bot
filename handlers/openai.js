@@ -7,10 +7,10 @@ const openai = new OpenAI({
 
 async function getAIResponse(phoneNumber, message) {
   try {
-    const conv = await get('SELECT id FROM conversations WHERE phone_number = ?', [phoneNumber]);
+    const conv = get('SELECT id FROM conversations WHERE phone_number = ?', [phoneNumber]);
     if (!conv) return null;
 
-    const messages = await all(`
+    const messages = all(`
       SELECT sender, message FROM messages
       WHERE conversation_id = ?
       ORDER BY created_at DESC LIMIT 10
