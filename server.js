@@ -34,8 +34,17 @@ app.post('/webhook', async (req, res) => {
 
       let { data: conv, error } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
       if (error || !conv) {
-        const { data: newConv } = await supabase.from('conversations').insert([{ phone_number: phone }]).select().single();
+        console.log(`Creating new conversation for ${phone}`);
+        const { data: newConv, error: insertError } = await supabase.from('conversations').insert([{ phone_number: phone }]).select().single();
+        if (insertError) {
+          console.error('Insert error:', insertError);
+          continue;
+        }
         conv = newConv;
+      }
+      if (!conv) {
+        console.error('Conv is still null after creation');
+        continue;
       }
 
       await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'user', message: text }]);
