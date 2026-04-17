@@ -1,5 +1,5 @@
 const axios = require('axios');
-const db = require('../db');
+const { run, get } = require('./db-utils');
 const { getAIResponse } = require('./openai');
 
 const WHATSAPP_API_URL = 'https://graph.instagram.com/v18.0';
@@ -33,25 +33,27 @@ async function sendMessage(phoneNumber, message) {
 
 async function handleIncomingMessage(phoneNumber, message) {
   try {
-    let conv = db.prepare('SELECT id, bot_paused FROM conversations WHERE phone_number = ?').get(phoneNumber);
+    let conv = await get('SELECT id, bot_paused FROM conversations WHERE phone_number = ?', [phoneNumber]);
 
     if (!conv) {
-      const result = db.prepare('INSERT INTO conversations (phone_number) VALUES (?)').run(phoneNumber);
-      conv = { id: result.lastInsertRowid, bot_paused: 0 };
+      const result = await run('INSERT INTO conversations (phone_number) VALUES (?)', [phoneNumber]);
+      conv = { id: result.id, bot_paused: 0 };
     }
 
-    db.prepare(`
-      INSERT INTO messages (conversation_id, sender, message)
-      VALUES (?, ?, ?)
-    `).run(conv.id, 'user', message);
+    await run(
+      `INSERT INTO messages (conversation_id, sender, message) VALUES (?, ?, ?)`,
+      [conv.id, 'user', message]
+    );
 
     if (!conv.bot_paused) {
       const aiResponse = await getAIResponse(phoneNumber, message);
-      await sendMessage(phoneNumber, aiResponse);
-      db.prepare(`
-        INSERT INTO messages (conversation_id, sender, message)
-        VALUES (?, ?, ?)
-      `).run(conv.id, 'assistant', aiResponse);
+      if (aiResponse) {
+        await sendMessage(phoneNumber, aiResponse);
+        await run(
+          `INSERT INTO messages (conversation_id, sender, message) VALUES (?, ?, ?)`,
+          [conv.id, 'assistant', aiResponse]
+        );
+      }
     }
 
     return { success: true, conversation_id: conv.id };
@@ -63,12 +65,12 @@ async function handleIncomingMessage(phoneNumber, message) {
 
 async function sendManualMessage(phoneNumber, message) {
   const result = await sendMessage(phoneNumber, message);
-  const conv = db.prepare('SELECT id FROM conversations WHERE phone_number = ?').get(phoneNumber);
+  const conv = await get('SELECT id FROM conversations WHERE phone_number = ?', [phoneNumber]);
   if (conv) {
-    db.prepare(`
-      INSERT INTO messages (conversation_id, sender, message)
-      VALUES (?, ?, ?)
-    `).run(conv.id, 'agent', message);
+    await run(
+      `INSERT INTO messages (conversation_id, sender, message) VALUES (?, ?, ?)`,
+      [conv.id, 'agent', message]
+    );
   }
   return result;
 }

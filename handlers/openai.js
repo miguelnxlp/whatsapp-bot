@@ -1,5 +1,5 @@
 const { OpenAI } = require('openai');
-const db = require('../db');
+const { get, all } = require('./db-utils');
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -7,14 +7,14 @@ const openai = new OpenAI({
 
 async function getAIResponse(phoneNumber, message) {
   try {
-    const conv = db.prepare('SELECT id FROM conversations WHERE phone_number = ?').get(phoneNumber);
+    const conv = await get('SELECT id FROM conversations WHERE phone_number = ?', [phoneNumber]);
     if (!conv) return null;
 
-    const messages = db.prepare(`
+    const messages = await all(`
       SELECT sender, message FROM messages
       WHERE conversation_id = ?
       ORDER BY created_at DESC LIMIT 10
-    `).all(conv.id);
+    `, [conv.id]);
 
     const conversationHistory = messages.reverse().map(msg => ({
       role: msg.sender === 'user' ? 'user' : 'assistant',
