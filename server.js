@@ -22,11 +22,14 @@ app.get('/webhook', (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   try {
+    console.log('📨 Webhook received:', JSON.stringify(req.body).substring(0, 200));
     const messages = req.body.entry?.[0]?.changes?.[0]?.value?.messages || [];
+    console.log(`📦 Found ${messages.length} messages`);
 
     for (const msg of messages) {
       const phone = msg.from;
       const text = msg.text?.body;
+      console.log(`📱 Message from ${phone}: ${text}`);
       if (!text) continue;
 
       let { data: conv, error } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
