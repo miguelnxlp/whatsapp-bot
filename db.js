@@ -1,16 +1,22 @@
-const sqlite3 = require('sqlite3').verbose();
+const initSqlJs = require('sql.js');
+const fs = require('fs');
 const path = require('path');
 
 const dbPath = path.join(__dirname, 'bot.db');
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Database error:', err.message);
-  } else {
-    console.log('Connected to SQLite database');
-  }
-});
 
-db.serialize(() => {
+let db = null;
+let SQL = null;
+
+async function initDB() {
+  SQL = await initSqlJs();
+
+  let data;
+  if (fs.existsSync(dbPath)) {
+    data = fs.readFileSync(dbPath);
+  }
+
+  db = new SQL.Database(data);
+
   db.run(`
     CREATE TABLE IF NOT EXISTS conversations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,6 +51,21 @@ db.serialize(() => {
       FOREIGN KEY (conversation_id) REFERENCES conversations(id)
     )
   `);
-});
 
-module.exports = db;
+  saveDB();
+  console.log('✅ Database initialized');
+  return db;
+}
+
+function saveDB() {
+  if (!db) return;
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(dbPath, buffer);
+}
+
+function getDB() {
+  return db;
+}
+
+module.exports = { initDB, getDB, saveDB };
