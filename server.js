@@ -1,30 +1,18 @@
 require('dotenv').config();
-console.log('1. Env loaded');
 
 const express = require('express');
-console.log('2. Express loaded');
-
-const cors = require('cors');
-console.log('3. CORS loaded');
-
 const app = express();
-console.log('4. Express app created');
 
-app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
-console.log('5. Middleware added');
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'WhatsApp Bot is running' });
+  res.json({ status: 'ok' });
 });
 
 app.get('/webhook', (req, res) => {
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (token === process.env.VERIFY_TOKEN) {
-    res.send(challenge);
+  if (req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) {
+    res.send(req.query['hub.challenge']);
   } else {
     res.sendStatus(403);
   }
@@ -34,11 +22,16 @@ app.post('/webhook', (req, res) => {
   res.sendStatus(200);
 });
 
-const PORT = process.env.PORT || 3000;
-console.log('6. Starting server on port', PORT);
-
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+const server = app.listen(3000, '0.0.0.0', () => {
+  console.log('✅ Server started on port 3000');
 });
 
-console.log('7. Server initialized');
+server.on('error', (err) => {
+  console.error('Server error:', err);
+  process.exit(1);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
