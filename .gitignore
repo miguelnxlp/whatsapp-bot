@@ -1,0 +1,8 @@
+.env
+.env.local
+node_modules/
+bot.db
+bot.db-shm
+bot.db-wal
+.DS_Store
+*.log
