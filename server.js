@@ -1,20 +1,24 @@
 require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const bodyParser = require('body-parser');
+console.log('1. Env loaded');
 
-require('./db');
-const { handleIncomingMessage, sendManualMessage } = require('./handlers/whatsapp');
-const { get, all, run } = require('./handlers/db-utils');
+const express = require('express');
+console.log('2. Express loaded');
+
+const cors = require('cors');
+console.log('3. CORS loaded');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+console.log('4. Express app created');
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 app.use(express.static('public'));
+console.log('5. Middleware added');
 
-// WhatsApp Webhook Verification
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', message: 'WhatsApp Bot is running' });
+});
+
 app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
@@ -26,110 +30,15 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Receive WhatsApp Messages
-app.post('/webhook', async (req, res) => {
-  try {
-    const body = req.body;
-
-    if (body.object === 'whatsapp_business_account') {
-      const entries = body.entry || [];
-
-      for (const entry of entries) {
-        const changes = entry.changes || [];
-
-        for (const change of changes) {
-          if (change.field === 'messages') {
-            const messages = change.value.messages || [];
-
-            for (const message of messages) {
-              const phoneNumber = message.from;
-              const messageText = message.text?.body;
-
-              if (messageText) {
-                await handleIncomingMessage(phoneNumber, messageText);
-              }
-            }
-          }
-        }
-      }
-    }
-
-    res.sendStatus(200);
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.sendStatus(500);
-  }
+app.post('/webhook', (req, res) => {
+  res.sendStatus(200);
 });
 
-// API: Get all conversations
-app.get('/api/conversations', (req, res) => {
-  try {
-    const convs = all(`SELECT c.id, c.phone_number`);
-    res.json(convs);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get conversation messages
-app.get('/api/conversations/:id/messages', (req, res) => {
-  try {
-    const messages = all(`SELECT * FROM messages WHERE conversation_id = ?`, [parseInt(req.params.id)]);
-    res.json(messages);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Pause/Resume bot
-app.post('/api/conversations/:id/pause', (req, res) => {
-  try {
-    const { paused } = req.body;
-    run('UPDATE conversations SET bot_paused = ?', [paused ? 1 : 0, parseInt(req.params.id)]);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Send manual message
-app.post('/api/conversations/:id/send', async (req, res) => {
-  try {
-    const { message } = req.body;
-    const conv = get('SELECT phone_number FROM conversations WHERE id = ?', [parseInt(req.params.id)]);
-
-    if (!conv) {
-      return res.status(404).json({ error: 'Conversation not found' });
-    }
-
-    await sendManualMessage(conv.phone_number, message);
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// API: Get reports
-app.get('/api/reports', (req, res) => {
-  try {
-    const totalConvs = get('SELECT COUNT(*) as count FROM conversations');
-    const totalMessages = get('SELECT COUNT(*) as count FROM messages');
-    const activeConvs = get('SELECT COUNT(*) as count FROM conversations WHERE status = ?', ['active']);
-    const messagesByDay = all('SELECT DATE(created_at) as date, COUNT(*) as count FROM messages');
-
-    res.json({
-      totalConversations: totalConvs?.count || 0,
-      totalMessages: totalMessages?.count || 0,
-      activeConversations: activeConvs?.count || 0,
-      messagesByDay,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+const PORT = process.env.PORT || 3000;
+console.log('6. Starting server on port', PORT);
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Dashboard: http://localhost:${PORT}`);
-  console.log('✅ Server is ready');
+  console.log(`✅ Server running on port ${PORT}`);
 });
+
+console.log('7. Server initialized');
