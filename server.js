@@ -76,14 +76,33 @@ function isWithinBusinessHours(hoursConfig) {
 
 // ── WA HELPERS ─────────────────────────────────────────────────────────────
 
+async function markAsRead(messageId) {
+  try {
+    await axios.post(`${WA_API}/messages`, {
+      messaging_product: 'whatsapp', status: 'read', message_id: messageId,
+    }, { headers: WA_HEADERS() });
+  } catch {}
+}
+
+async function sendTypingOn(phone) {
+  try {
+    await axios.post(`${WA_API}/messages`, {
+      messaging_product: 'whatsapp', to: phone, recipient_type: 'individual',
+      type: 'text', status: 'typing',
+    }, { headers: WA_HEADERS() });
+  } catch {}
+  await new Promise(r => setTimeout(r, 1200 + Math.floor(Math.random() * 800)));
+}
+
 async function sendTextMessage(phone, text) {
-  return axios.post(`${WA_API}/messages`, {
+  const res = await axios.post(`${WA_API}/messages`, {
     messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: text },
   }, { headers: WA_HEADERS() });
+  return res.data?.messages?.[0]?.id || null;
 }
 
 async function sendButtons(phone, bodyText) {
-  return axios.post(`${WA_API}/messages`, {
+  const res = await axios.post(`${WA_API}/messages`, {
     messaging_product: 'whatsapp', to: phone, type: 'interactive',
     interactive: {
       type: 'button', body: { text: bodyText },
@@ -93,6 +112,7 @@ async function sendButtons(phone, bodyText) {
       ]},
     },
   }, { headers: WA_HEADERS() });
+  return res.data?.messages?.[0]?.id || null;
 }
 
 async function transcribeAudio(mediaId) {
@@ -205,6 +225,8 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   const msgs = (history || []).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.message }));
   msgs.push({ role: 'user', content: text });
 
+  await sendTypingOn(phone);
+
   const response = await openai.chat.completions.create({
     model: 'gpt-4.1-nano',
     messages: [{ role: 'system', content: systemPrompt }, ...msgs],
@@ -215,8 +237,8 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   const offerCita = aiText.includes('[OFRECER_CITA]');
   aiText = aiText.replace('[OFRECER_CITA]', '').trim();
 
-  await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText }]);
-  offerCita ? await sendButtons(phone, aiText) : await sendTextMessage(phone, aiText);
+  const waId = offerCita ? await sendButtons(phone, aiText) : await sendTextMessage(phone, aiText);
+  await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText, wa_message_id: waId, delivery_status: 'sent' }]);
 
   const allText = [...msgs.map(m => `${m.role}: ${m.content}`), `assistant: ${aiText}`].join('\n');
   updateMemory(conv.id, allText);
@@ -231,10 +253,19 @@ app.get('/webhook', (req, res) => {
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
-    const messages = req.body.entry?.[0]?.changes?.[0]?.value?.messages || [];
+    const value = req.body.entry?.[0]?.changes?.[0]?.value || {};
+
+    // Delivery status updates (sent → delivered → read)
+    const statuses = value.statuses || [];
+    for (const s of statuses) {
+      await supabase.from('messages').update({ delivery_status: s.status }).eq('wa_message_id', s.id);
+    }
+
+    const messages = value.messages || [];
     for (const msg of messages) {
       const phone = msg.from;
       try {
+        markAsRead(msg.id); // fire-and-forget: show blue ticks to user
         const conv = await getOrCreateConversation(phone);
         if (msg.type === 'text') {
           await processMessage(phone, msg.text.body, conv, 'text');
