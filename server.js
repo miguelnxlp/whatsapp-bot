@@ -102,7 +102,7 @@ CONTRATO REALIDAD - SOLO estos 3 elementos:
           await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText }]);
 
           console.log(`📤 Enviando a WhatsApp: ${phone}`);
-          const waRes = await axios.post(`https://graph.instagram.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+          const waRes = await axios.post(`https://graph.facebook.com/v25.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
             messaging_product: 'whatsapp',
             to: phone,
             type: 'text',
@@ -163,7 +163,7 @@ app.post('/api/conversations/:id/send', async (req, res) => {
     const { data: conv } = await supabase.from('conversations').select('*').eq('id', parseInt(req.params.id)).single();
     if (!conv) return res.status(404).json({ error: 'Not found' });
 
-    await axios.post(`https://graph.instagram.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+    await axios.post(`https://graph.facebook.com/v25.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
       messaging_product: 'whatsapp',
       to: conv.phone_number,
       type: 'text',
