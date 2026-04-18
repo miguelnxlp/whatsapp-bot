@@ -524,5 +524,32 @@ app.get('/api/conversations/export/csv', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// ── HEALTH CHECK (público — permite ping para evitar hibernación) ───────────
+app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
+
+// ── AUTO-RESET de conversaciones atascadas en bot_paused ──────────────────
+// Si un agente tomó control pero no devolvió el bot en >2h, auto-reactivar
+async function autoResetStalePausedConversations() {
+  try {
+    const cutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2 horas
+    const { data, error } = await supabase
+      .from('conversations')
+      .update({ bot_paused: 0 })
+      .eq('bot_paused', 1)
+      .neq('status', 'resolved')
+      .lt('updated_at', cutoff)
+      .select('id, phone_number');
+    if (!error && data?.length) {
+      console.log(`🔄 Auto-reset bot_paused en ${data.length} conversaciones inactivas:`, data.map(c => c.phone_number));
+    }
+  } catch (e) { console.error('Auto-reset error:', e.message); }
+}
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Server on port ${PORT}`);
+  // Corre auto-reset al iniciar (cubre reinicio de Render después de hibernación)
+  autoResetStalePausedConversations();
+  // Y cada hora
+  setInterval(autoResetStalePausedConversations, 60 * 60 * 1000);
+});
