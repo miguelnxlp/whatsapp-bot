@@ -47,10 +47,11 @@ app.post('/webhook', async (req, res) => {
         continue;
       }
 
+      const { data: history } = await supabase.from('messages').select('*').eq('conversation_id', conv.id).order('created_at').limit(10);
       await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'user', message: text }]);
+      await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv.id);
 
       if (!conv.bot_paused) {
-        const { data: history } = await supabase.from('messages').select('*').eq('conversation_id', conv.id).order('created_at').limit(10);
         const msgs = (history || []).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.message }));
         msgs.push({ role: 'user', content: text });
 
@@ -122,12 +123,15 @@ CONTRATO REALIDAD - SOLO estos 3 elementos:
 // APIs
 app.get('/api/conversations', async (req, res) => {
   try {
-    const { data: conversations } = await supabase.from('conversations').select('*').order('updated_at', { ascending: false });
-    const result = [];
-    for (const conv of conversations || []) {
-      const { count } = await supabase.from('messages').select('*', { count: 'exact', head: true }).eq('conversation_id', conv.id);
-      result.push({ ...conv, message_count: count || 0 });
-    }
+    const { data: conversations } = await supabase
+      .from('conversations')
+      .select('*, messages(count)')
+      .order('updated_at', { ascending: false });
+    const result = (conversations || []).map(c => ({
+      ...c,
+      message_count: c.messages?.[0]?.count || 0,
+      messages: undefined,
+    }));
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -173,12 +177,14 @@ app.post('/api/conversations/:id/send', async (req, res) => {
 
 app.get('/api/reports', async (req, res) => {
   try {
-    const { data: conversations } = await supabase.from('conversations').select('*');
-    const { data: messages } = await supabase.from('messages').select('*');
+    const [{ count: totalConversations }, { count: totalMessages }] = await Promise.all([
+      supabase.from('conversations').select('*', { count: 'exact', head: true }),
+      supabase.from('messages').select('*', { count: 'exact', head: true }),
+    ]);
     res.json({
-      totalConversations: conversations?.length || 0,
-      totalMessages: messages?.length || 0,
-      activeConversations: conversations?.filter(c => c.status === 'active').length || 0,
+      totalConversations: totalConversations || 0,
+      totalMessages: totalMessages || 0,
+      activeConversations: 0,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
