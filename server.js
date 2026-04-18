@@ -11,8 +11,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const WA_API = `https://graph.facebook.com/v25.0/${process.env.WHATSAPP_PHONE_ID}`;
 const WA_HEADERS = () => ({ Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}` });
 
-// Conversaciones reconectadas recientemente — salta keyword check por 3 minutos
-const recentReconnects = new Map();
+const recentReconnects = new Map(); // convId → timestamp, cooldown de keywords post-handback
+const processedMsgIds = new Set();  // deduplicación de webhooks retried por WhatsApp
 
 const DEFAULT_PROMPT = `Eres un asesor legal virtual especializado ÚNICAMENTE en contrato realidad en Colombia.
 
@@ -131,24 +131,36 @@ async function sendTypingOn(phone) {
 }
 
 async function sendTextMessage(phone, text) {
-  const res = await axios.post(`${WA_API}/messages`, {
-    messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: text },
-  }, { headers: WA_HEADERS() });
-  return res.data?.messages?.[0]?.id || null;
+  try {
+    const res = await axios.post(`${WA_API}/messages`, {
+      messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: text },
+    }, { headers: WA_HEADERS() });
+    return res.data?.messages?.[0]?.id || null;
+  } catch (err) {
+    if (err.response?.data?.error?.code === 190)
+      console.error('🔴 TOKEN DE WHATSAPP EXPIRADO — regenerar en developers.facebook.com');
+    throw err;
+  }
 }
 
 async function sendButtons(phone, bodyText) {
-  const res = await axios.post(`${WA_API}/messages`, {
-    messaging_product: 'whatsapp', to: phone, type: 'interactive',
-    interactive: {
-      type: 'button', body: { text: bodyText },
-      action: { buttons: [
-        { type: 'reply', reply: { id: 'agendar_si', title: '📅 Sí, quiero agendar' } },
-        { type: 'reply', reply: { id: 'agendar_no', title: 'No por ahora' } },
-      ]},
-    },
-  }, { headers: WA_HEADERS() });
-  return res.data?.messages?.[0]?.id || null;
+  try {
+    const res = await axios.post(`${WA_API}/messages`, {
+      messaging_product: 'whatsapp', to: phone, type: 'interactive',
+      interactive: {
+        type: 'button', body: { text: bodyText },
+        action: { buttons: [
+          { type: 'reply', reply: { id: 'agendar_si', title: '📅 Sí, quiero agendar' } },
+          { type: 'reply', reply: { id: 'agendar_no', title: 'No por ahora' } },
+        ]},
+      },
+    }, { headers: WA_HEADERS() });
+    return res.data?.messages?.[0]?.id || null;
+  } catch (err) {
+    if (err.response?.data?.error?.code === 190)
+      console.error('🔴 TOKEN DE WHATSAPP EXPIRADO — regenerar en developers.facebook.com');
+    throw err;
+  }
 }
 
 async function transcribeAudio(mediaId) {
@@ -163,7 +175,7 @@ async function transcribeAudio(mediaId) {
 // ── MEMORY HELPERS ─────────────────────────────────────────────────────────
 
 async function loadMemory(conversationId) {
-  const { data } = await supabase.from('user_memory').select('*').eq('conversation_id', conversationId).single();
+  const { data } = await supabase.from('user_memory').select('*').eq('conversation_id', conversationId).maybeSingle();
   return data || null;
 }
 
@@ -205,18 +217,27 @@ async function updateMemory(conversationId, conversationText) {
 // ── CONVERSATION HELPERS ───────────────────────────────────────────────────
 
 async function getOrCreateConversation(phone) {
-  let { data: conv, error } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
-  if (error || !conv) {
-    const { data: newConv, error: insertError } = await supabase.from('conversations').insert([{ phone_number: phone, status: 'active' }]).select().single();
+  // Usa array query para evitar que .single() explote con múltiples filas
+  const { data: convs } = await supabase
+    .from('conversations').select('*').eq('phone_number', phone)
+    .order('created_at', { ascending: false }).limit(1);
+
+  const conv = convs?.[0];
+
+  // Crea nueva conversación si no existe o si la última fue resuelta
+  if (!conv || conv.status === 'resolved') {
+    const { data: newConv, error: insertError } = await supabase
+      .from('conversations').insert([{ phone_number: phone, status: 'active', bot_paused: 0 }]).select().single();
     if (insertError) throw insertError;
-    conv = newConv;
 
     const welcome = await getConfig('welcome_message');
     if (welcome) {
       await sendTextMessage(phone, welcome);
       await supabase.from('messages').insert([{ conversation_id: newConv.id, sender: 'assistant', message: welcome }]);
     }
+    return newConv;
   }
+
   return conv;
 }
 
@@ -255,7 +276,10 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   }
 
   const systemPrompt = buildSystemPrompt(cfg.system_prompt) + buildMemoryBlock(memory);
-  const msgs = (history || []).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.message }));
+  const msgs = (history || []).map(m => ({
+    role: m.sender === 'user' ? 'user' : 'assistant',
+    content: m.sender === 'agent' ? `[Asesor humano]: ${m.message}` : m.message,
+  }));
   msgs.push({ role: 'user', content: text });
 
   await sendTypingOn(phone);
@@ -300,20 +324,36 @@ app.post('/webhook', async (req, res) => {
 
     const messages = value.messages || [];
     for (const msg of messages) {
+      // Deduplicación: WhatsApp reintenta el webhook si tardamos, evitar doble proceso
+      if (processedMsgIds.has(msg.id)) continue;
+      processedMsgIds.add(msg.id);
+      setTimeout(() => processedMsgIds.delete(msg.id), 5 * 60 * 1000);
+
       const phone = msg.from;
       try {
-        markAsRead(msg.id); // fire-and-forget: show blue ticks to user
+        markAsRead(msg.id);
         const conv = await getOrCreateConversation(phone);
+
         if (msg.type === 'text') {
           await processMessage(phone, msg.text.body, conv, 'text');
         } else if (msg.type === 'audio' || msg.type === 'voice') {
-          await sendTextMessage(phone, '🎤 Recibí tu audio, un momento...');
+          if (!conv.bot_paused) await sendTextMessage(phone, '🎤 Recibí tu audio, transcribiendo...');
           const transcription = await transcribeAudio(msg.audio?.id || msg.voice?.id);
           await processMessage(phone, transcription, conv, 'audio');
         } else if (msg.type === 'interactive') {
-          const id = msg.interactive?.button_reply?.id;
-          const text = id === 'agendar_si' ? 'Sí, quiero agendar una cita' : id === 'agendar_no' ? 'No quiero agendar por ahora' : msg.interactive?.button_reply?.title;
+          const btnId = msg.interactive?.button_reply?.id;
+          const text = btnId === 'agendar_si' ? 'Sí, quiero agendar una cita'
+            : btnId === 'agendar_no' ? 'No quiero agendar por ahora'
+            : msg.interactive?.button_reply?.title;
           await processMessage(phone, text, conv, 'text');
+        } else {
+          // Imagen, video, sticker, documento, ubicación, etc.
+          const label = { image: 'imagen', video: 'video', document: 'documento', sticker: 'sticker', location: 'ubicación' }[msg.type] || msg.type;
+          await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'user', message: `[${label}]` }]);
+          await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv.id);
+          if (!conv.bot_paused) {
+            await sendTextMessage(phone, `Recibí tu ${label}. Por ahora solo proceso texto y audio. ¿Tienes alguna consulta sobre contrato realidad?`);
+          }
         }
       } catch (err) {
         console.error(`❌ Error ${phone}:`, err.response?.data || err.message);
