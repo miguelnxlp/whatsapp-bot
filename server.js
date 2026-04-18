@@ -64,7 +64,7 @@ async function transcribeAudio(mediaId) {
   const buffer = Buffer.from(audioRes.data);
   const { toFile } = await import('openai/uploads');
   const file = await toFile(buffer, 'audio.ogg', { type: 'audio/ogg' });
-  const transcription = await openai.audio.transcriptions.create({ file, model: 'whisper-1', language: 'es' });
+  const transcription = await openai.audio.transcriptions.create({ file, model: 'gpt-4o-mini-transcribe', language: 'es' });
   return transcription.text;
 }
 
@@ -114,7 +114,7 @@ function buildMemoryBlock(memory) {
 async function updateMemory(conversationId, conversationText) {
   try {
     const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4.1-nano',
       messages: [
         {
           role: 'system',
@@ -181,7 +181,7 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   msgs.push({ role: 'user', content: text });
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model: 'gpt-4.1-nano',
     messages: [{ role: 'system', content: systemPrompt }, ...msgs],
     max_tokens: 350,
     temperature: 0.7,
@@ -340,9 +340,15 @@ app.post('/api/config/prompt', async (req, res) => {
   try {
     const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: 'prompt requerido' });
-    await supabase.from('bot_config').upsert({ key: 'system_prompt', value: prompt, updated_at: new Date().toISOString() });
+    const { error } = await supabase.from('bot_config').upsert({ key: 'system_prompt', value: prompt, updated_at: new Date().toISOString() });
+    if (error) {
+      console.error('❌ Error guardando prompt:', error);
+      return res.status(500).json({ error: error.message });
+    }
+    console.log('✅ Prompt guardado correctamente');
     res.json({ success: true });
   } catch (error) {
+    console.error('❌ Error guardando prompt:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

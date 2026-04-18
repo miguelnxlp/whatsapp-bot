@@ -988,15 +988,25 @@
     const prompt = document.getElementById('prompt-textarea').value.trim();
     if (!prompt) return;
     try {
-      await fetch('/api/config/prompt', {
+      const res = await fetch('/api/config/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
       });
       const notice = document.getElementById('save-notice');
+      if (res.ok) {
+        notice.textContent = '✓ Guardado';
+        notice.style.color = 'var(--success)';
+      } else {
+        const err = await res.json();
+        notice.textContent = '✗ Error: ' + err.error;
+        notice.style.color = 'var(--danger)';
+      }
       notice.classList.add('visible');
-      setTimeout(() => notice.classList.remove('visible'), 2500);
-    } catch(e) { console.error(e); }
+      setTimeout(() => notice.classList.remove('visible'), 3000);
+    } catch(e) {
+      console.error(e);
+    }
   }
 
   async function resetPrompt() {
