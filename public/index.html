@@ -106,6 +106,107 @@
     .icon-btn:hover { color: var(--text); background: var(--bg-3); }
     .icon-btn.active { color: var(--text); background: var(--accent-soft); }
 
+    /* CONFIG PANEL */
+    .config-panel {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      padding: 32px;
+      overflow-y: auto;
+      max-width: 800px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .config-panel.visible { display: flex; }
+
+    .config-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+
+    .config-subtitle {
+      font-size: 12px;
+      color: var(--text-2);
+      margin-bottom: 20px;
+    }
+
+    .config-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-2);
+      margin-bottom: 8px;
+    }
+
+    .prompt-textarea {
+      width: 100%;
+      min-height: 420px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      padding: 16px;
+      resize: vertical;
+      outline: none;
+      transition: border-color 160ms;
+    }
+
+    .prompt-textarea:focus { border-color: var(--border-2); }
+
+    .config-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .btn-save {
+      height: 32px;
+      padding: 0 18px;
+      background: var(--success);
+      border: none;
+      border-radius: 4px;
+      color: #000;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 160ms;
+    }
+
+    .btn-save:hover { opacity: 0.85; }
+
+    .btn-reset {
+      height: 32px;
+      padding: 0 14px;
+      background: transparent;
+      border: 1px solid var(--border-2);
+      border-radius: 4px;
+      color: var(--text-2);
+      font-family: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 160ms;
+    }
+
+    .btn-reset:hover { color: var(--text); border-color: var(--text-3); }
+
+    .save-notice {
+      font-size: 11px;
+      color: var(--success);
+      opacity: 0;
+      transition: opacity 300ms;
+    }
+
+    .save-notice.visible { opacity: 1; }
+
     /* ── CONVERSATIONS PANEL ── */
     .conv-panel {
       width: 300px;
@@ -537,7 +638,8 @@
   <div class="icon-sidebar">
     <div class="icon-sidebar-top">
       <img src="/logo.svg" alt="NextLeap" style="width:32px;height:32px;border-radius:6px;object-fit:contain;">
-      <button class="icon-btn active" title="Conversaciones">💬</button>
+      <button class="icon-btn active" id="btn-nav-chats" title="Conversaciones" onclick="showView('chats')">💬</button>
+      <button class="icon-btn" id="btn-nav-config" title="Configuración" onclick="showView('config')">⚙</button>
     </div>
     <div class="icon-sidebar-bottom">
       <button class="icon-btn" title="Actualizar" onclick="loadConversations()">↻</button>
@@ -570,6 +672,19 @@
 
   <!-- MAIN -->
   <div class="main">
+
+    <!-- CONFIG VIEW -->
+    <div class="config-panel" id="config-panel">
+      <div class="config-title">Configuración del Bot</div>
+      <div class="config-subtitle">Edita el prompt del sistema. Usa <code style="background:var(--bg-3);padding:1px 5px;border-radius:3px;font-size:11px;">{{today}}</code> para la fecha actual y <code style="background:var(--bg-3);padding:1px 5px;border-radius:3px;font-size:11px;">[OFRECER_CITA]</code> para activar botones de agendamiento.</div>
+      <div class="config-label">System Prompt</div>
+      <textarea class="prompt-textarea" id="prompt-textarea" spellcheck="false"></textarea>
+      <div class="config-actions">
+        <button class="btn-save" onclick="savePrompt()">Guardar cambios</button>
+        <button class="btn-reset" onclick="resetPrompt()">Restaurar por defecto</button>
+        <span class="save-notice" id="save-notice">✓ Guardado</span>
+      </div>
+    </div>
 
     <div class="empty-state" id="empty-state">
       <div class="empty-icon">⚖️</div>
@@ -819,6 +934,59 @@
     const d = document.createElement('div');
     d.textContent = text;
     return d.innerHTML.replace(/\n/g, '<br>');
+  }
+
+  // ─── NAVIGATION ──────────────────────────────────────────────────────
+  function showView(view) {
+    const isChats = view === 'chats';
+    document.getElementById('btn-nav-chats').classList.toggle('active', isChats);
+    document.getElementById('btn-nav-config').classList.toggle('active', !isChats);
+    document.getElementById('config-panel').classList.toggle('visible', !isChats);
+    document.querySelector('.conv-panel').style.display = isChats ? 'flex' : 'none';
+
+    if (!isChats) {
+      document.getElementById('empty-state').style.display = 'none';
+      document.getElementById('chat-view').style.display = 'none';
+      loadPrompt();
+    } else {
+      if (!currentConvId) document.getElementById('empty-state').style.display = 'flex';
+    }
+  }
+
+  // ─── PROMPT CONFIG ────────────────────────────────────────────────────
+  async function loadPrompt() {
+    try {
+      const res = await fetch('/api/config/prompt');
+      const { prompt } = await res.json();
+      document.getElementById('prompt-textarea').value = prompt;
+    } catch(e) { console.error(e); }
+  }
+
+  async function savePrompt() {
+    const prompt = document.getElementById('prompt-textarea').value.trim();
+    if (!prompt) return;
+    try {
+      await fetch('/api/config/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      const notice = document.getElementById('save-notice');
+      notice.classList.add('visible');
+      setTimeout(() => notice.classList.remove('visible'), 2500);
+    } catch(e) { console.error(e); }
+  }
+
+  async function resetPrompt() {
+    if (!confirm('¿Restaurar el prompt por defecto?')) return;
+    try {
+      await fetch('/api/config/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: '' }),
+      });
+      loadPrompt();
+    } catch(e) { console.error(e); }
   }
 
   loadConversations();
