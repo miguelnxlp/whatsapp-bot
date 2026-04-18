@@ -95,6 +95,62 @@ async function sendButtons(phone, bodyText) {
   }, { headers: WA_HEADERS() });
 }
 
+async function loadMemory(conversationId) {
+  const { data } = await supabase.from('user_memory').select('*').eq('conversation_id', conversationId).single();
+  return data || null;
+}
+
+function buildMemoryBlock(memory) {
+  if (!memory) return '';
+  const lines = [];
+  if (memory.nombre) lines.push(`- Nombre: ${memory.nombre}`);
+  if (memory.empresa) lines.push(`- Empresa/empleador: ${memory.empresa}`);
+  if (memory.situacion) lines.push(`- Situación: ${memory.situacion}`);
+  if (memory.notas) lines.push(`- Notas adicionales: ${memory.notas}`);
+  if (!lines.length) return '';
+  return `\nMEMORIA DEL USUARIO (usa esta info, no la vuelvas a preguntar):\n${lines.join('\n')}\n`;
+}
+
+async function updateMemory(conversationId, conversationText) {
+  try {
+    const res = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `Extrae información clave de esta conversación sobre contrato realidad.
+Responde SOLO con JSON válido con estas claves (null si no se menciona):
+{ "nombre": string|null, "empresa": string|null, "situacion": string|null, "notas": string|null }
+- nombre: nombre del usuario
+- empresa: empresa o empleador mencionado
+- situacion: resumen breve de su caso laboral (max 100 chars)
+- notas: cualquier dato extra relevante (horario, tiempo trabajando, salario, etc.)`
+        },
+        { role: 'user', content: conversationText }
+      ],
+      max_tokens: 200,
+      temperature: 0,
+    });
+
+    const raw = res.choices[0].message.content.replace(/```json|```/g, '').trim();
+    const extracted = JSON.parse(raw);
+
+    const { data: existing } = await supabase.from('user_memory').select('*').eq('conversation_id', conversationId).single();
+    const merged = {
+      conversation_id: conversationId,
+      nombre: extracted.nombre || existing?.nombre || null,
+      empresa: extracted.empresa || existing?.empresa || null,
+      situacion: extracted.situacion || existing?.situacion || null,
+      notas: extracted.notas || existing?.notas || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    await supabase.from('user_memory').upsert(merged);
+  } catch (e) {
+    console.error('Memory update error:', e.message);
+  }
+}
+
 async function getOrCreateConversation(phone) {
   let { data: conv, error } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
   if (error || !conv) {
@@ -113,10 +169,17 @@ async function processMessage(phone, text, conv, messageType = 'text') {
 
   if (conv.bot_paused) return;
 
+  const [memory, systemPromptBase] = await Promise.all([
+    loadMemory(conv.id),
+    getSystemPrompt(),
+  ]);
+
+  const memoryBlock = buildMemoryBlock(memory);
+  const systemPrompt = systemPromptBase + memoryBlock;
+
   const msgs = (history || []).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.message }));
   msgs.push({ role: 'user', content: text });
 
-  const systemPrompt = await getSystemPrompt();
   const response = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [{ role: 'system', content: systemPrompt }, ...msgs],
@@ -135,6 +198,10 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   } else {
     await sendTextMessage(phone, aiText);
   }
+
+  // Actualizar memoria en background (no bloquea la respuesta)
+  const allText = [...msgs.map(m => `${m.role}: ${m.content}`), `assistant: ${aiText}`].join('\n');
+  updateMemory(conv.id, allText);
 }
 
 // ── WEBHOOK ────────────────────────────────────────────────────────────────
@@ -246,6 +313,15 @@ app.get('/api/reports', async (req, res) => {
     res.json({ totalConversations: totalConversations || 0, totalMessages: totalMessages || 0 });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/conversations/:id/memory', async (req, res) => {
+  try {
+    const { data } = await supabase.from('user_memory').select('*').eq('conversation_id', parseInt(req.params.id)).single();
+    res.json(data || {});
+  } catch (error) {
+    res.json({});
   }
 });
 
