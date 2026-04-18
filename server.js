@@ -101,14 +101,16 @@ CONTRATO REALIDAD - SOLO estos 3 elementos:
 
           await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText }]);
 
-          await axios.post(`https://graph.instagram.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+          console.log(`📤 Enviando a WhatsApp: ${phone}`);
+          const waRes = await axios.post(`https://graph.instagram.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
             messaging_product: 'whatsapp',
             to: phone,
             type: 'text',
             text: { body: aiText },
           }, { headers: { Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}` } });
+          console.log(`✅ WhatsApp enviado:`, JSON.stringify(waRes.data));
         } catch (err) {
-          console.error('AI/Send error:', err.response?.data || err.message);
+          console.error('❌ AI/Send error:', JSON.stringify(err.response?.data) || err.message);
         }
       }
     }
