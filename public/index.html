@@ -554,17 +554,33 @@ function useQuickReply(msg) {
 
 // ── HANDOFF ───────────────────────────────────────────────────────────────
 async function takeOver() {
-  await fetch(`/api/conversations/${currentConvId}/pause`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ paused: true }) });
-  currentConv.bot_paused = true; updateHeader(); renderSidebar();
+  const res = await fetch(`/api/conversations/${currentConvId}/pause`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ paused: true }) });
+  if (!res.ok) { alert('Error al tomar control. Verifica la conexión.'); return; }
+  await loadConversations();
+  currentConv = conversations.find(c => c.id === currentConvId);
+  updateHeader(); renderSidebar();
 }
+
 async function handBack() {
-  await fetch(`/api/conversations/${currentConvId}/pause`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ paused: false }) });
-  currentConv.bot_paused = false; updateHeader(); renderSidebar();
+  const res = await fetch(`/api/conversations/${currentConvId}/pause`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ paused: false }) });
+  if (!res.ok) { alert('Error al reconectar el bot. Verifica la conexión.'); return; }
+  // Re-fetch desde servidor para confirmar que el DB fue actualizado
+  await loadConversations();
+  currentConv = conversations.find(c => c.id === currentConvId);
+  if (currentConv?.bot_paused) {
+    alert('El bot no se pudo reconectar. El estado en DB no cambió.');
+    return;
+  }
+  updateHeader(); renderSidebar();
 }
+
 async function resolveConv() {
   if (!currentConvId) return;
-  await fetch(`/api/conversations/${currentConvId}/resolve`, { method: 'POST' });
-  currentConv.status = 'resolved'; updateHeader(); renderSidebar();
+  const res = await fetch(`/api/conversations/${currentConvId}/resolve`, { method: 'POST' });
+  if (!res.ok) { alert('Error al resolver la conversación.'); return; }
+  await loadConversations();
+  currentConv = conversations.find(c => c.id === currentConvId);
+  updateHeader(); renderSidebar();
 }
 
 // ── SEND MESSAGE ──────────────────────────────────────────────────────────

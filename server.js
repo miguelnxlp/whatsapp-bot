@@ -11,6 +11,9 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const WA_API = `https://graph.facebook.com/v25.0/${process.env.WHATSAPP_PHONE_ID}`;
 const WA_HEADERS = () => ({ Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}` });
 
+// Conversaciones reconectadas recientemente — salta keyword check por 3 minutos
+const recentReconnects = new Map();
+
 const DEFAULT_PROMPT = `Eres un asesor legal virtual especializado ÚNICAMENTE en contrato realidad en Colombia.
 
 ⚠️ RESTRICCIÓN IMPORTANTE:
@@ -238,7 +241,11 @@ async function processMessage(phone, text, conv, messageType = 'text') {
     return;
   }
 
-  if (cfg.handoff_keywords) {
+  const justReconnected = recentReconnects.has(conv.id) &&
+    (Date.now() - recentReconnects.get(conv.id)) < 3 * 60 * 1000; // 3 min de gracia
+  if (justReconnected) recentReconnects.delete(conv.id); // una sola vez
+
+  if (!justReconnected && cfg.handoff_keywords) {
     const keywords = cfg.handoff_keywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
     if (keywords.some(k => text.toLowerCase().includes(k))) {
       await supabase.from('conversations').update({ bot_paused: 1, updated_at: new Date().toISOString() }).eq('id', conv.id);
@@ -336,7 +343,9 @@ app.get('/api/conversations/:id/messages', async (req, res) => {
 
 app.post('/api/conversations/:id/pause', async (req, res) => {
   try {
-    await supabase.from('conversations').update({ bot_paused: req.body.paused ? 1 : 0 }).eq('id', parseInt(req.params.id));
+    const id = parseInt(req.params.id);
+    await supabase.from('conversations').update({ bot_paused: req.body.paused ? 1 : 0 }).eq('id', id);
+    if (!req.body.paused) recentReconnects.set(id, Date.now()); // cooldown para keywords
     res.json({ success: true });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
