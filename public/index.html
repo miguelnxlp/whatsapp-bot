@@ -360,7 +360,7 @@
 <script>
 let conversations = [], currentConvId = null, currentConv = null;
 let refreshInterval = null, currentFilter = 'all', chart = null;
-let quickReplies = [], isTyping = false, lastMsgCount = 0;
+let quickReplies = [], isTyping = false, lastMsgCount = 0, typingTimeout = null;
 
 // ── NAVIGATION ────────────────────────────────────────────────────────────
 function navigate(view) {
@@ -489,10 +489,13 @@ function renderMessages(msgs) {
   const area = document.getElementById('messages-area');
   const atBottom = area.scrollHeight - area.scrollTop <= area.clientHeight + 80;
 
-  // If typing and new bot message arrived, hide typing
+  // If typing and new bot message arrived, clear typing state
   if (isTyping && msgs.length > lastMsgCount) {
     const last = msgs[msgs.length - 1];
-    if (last && (last.sender === 'assistant' || last.sender === 'agent')) isTyping = false;
+    if (last && (last.sender === 'assistant' || last.sender === 'agent')) {
+      isTyping = false;
+      if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
+    }
   }
   lastMsgCount = msgs.length;
 
@@ -573,7 +576,12 @@ async function sendMessage() {
 
   // Show typing indicator if bot is in control (not agent mode)
   const isAgentMode = currentConv?.bot_paused;
-  if (!isAgentMode) { isTyping = true; loadMessages(); }
+  if (!isAgentMode) {
+    isTyping = true;
+    loadMessages();
+    if (typingTimeout) clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => { isTyping = false; loadMessages(); }, 30000);
+  }
 
   await fetch(`/api/conversations/${currentConvId}/send`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ message: msg }) });
   loadMessages();
@@ -665,9 +673,7 @@ async function saveSection(section) {
     } else if (section === 'handoff') {
       body = { handoff_keywords: document.getElementById('cfg-keywords').value };
     } else if (section === 'prompt') {
-      const prompt = document.getElementById('cfg-prompt').value.trim();
-      if (!prompt) return;
-      body = { system_prompt: prompt };
+      body = { system_prompt: document.getElementById('cfg-prompt').value.trim() };
     }
     const res = await fetch('/api/config', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     notice.textContent = res.ok ? '✓ Guardado' : '✗ Error';
@@ -680,7 +686,7 @@ async function saveSection(section) {
 
 async function resetPrompt() {
   if (!confirm('¿Restaurar el prompt por defecto?')) return;
-  document.getElementById('cfg-prompt').value = '';
+  document.getElementById('cfg-prompt').value = ''; // servidor usa DEFAULT_PROMPT cuando recibe string vacío
   saveSection('prompt');
 }
 

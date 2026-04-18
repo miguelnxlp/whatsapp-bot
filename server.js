@@ -38,6 +38,25 @@ CONTRATO REALIDAD:
 3. REMUNERACIÓN: Te pagan periódicamente`;
 
 app.use(express.json());
+
+// ── BASIC AUTH (protects dashboard + API, exempts webhook) ─────────────────
+app.use((req, res, next) => {
+  if (req.path === '/webhook' || req.path.startsWith('/webhook')) return next();
+  const user = process.env.DASHBOARD_USER || 'admin';
+  const pass = process.env.DASHBOARD_PASS || 'botlegal2024';
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Basic ')) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Bot Legal"');
+    return res.status(401).send('Autenticación requerida');
+  }
+  const [u, p] = Buffer.from(auth.slice(6), 'base64').toString().split(':');
+  if (u !== user || p !== pass) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Bot Legal"');
+    return res.status(401).send('Credenciales incorrectas');
+  }
+  next();
+});
+
 app.use(express.static('public'));
 
 // ── CONFIG HELPERS ─────────────────────────────────────────────────────────
@@ -49,14 +68,28 @@ async function getConfig(key, fallback = null) {
   } catch { return fallback; }
 }
 
+async function getAllConfig() {
+  try {
+    const { data } = await supabase.from('bot_config').select('key, value');
+    const cfg = {};
+    (data || []).forEach(row => { cfg[row.key] = row.value; });
+    return cfg;
+  } catch { return {}; }
+}
+
 async function setConfig(key, value) {
   await supabase.from('bot_config').upsert({ key, value, updated_at: new Date().toISOString() });
 }
 
-async function getSystemPrompt() {
-  const prompt = await getConfig('system_prompt', DEFAULT_PROMPT);
+function buildSystemPrompt(rawPrompt) {
+  const prompt = rawPrompt || DEFAULT_PROMPT;
   const today = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
   return prompt.replace('{{today}}', today);
+}
+
+async function getSystemPrompt() {
+  const raw = await getConfig('system_prompt', null);
+  return buildSystemPrompt(raw);
 }
 
 function isWithinBusinessHours(hoursConfig) {
@@ -192,36 +225,29 @@ async function processMessage(phone, text, conv, messageType = 'text') {
 
   if (conv.bot_paused) return;
 
-  // Pausa global
-  const globalPaused = await getConfig('bot_paused_global', 'false');
-  if (globalPaused === 'true') {
-    const pausedMsg = await getConfig('paused_message', 'Estamos fuera de servicio temporalmente. Te contactaremos pronto.');
-    await sendTextMessage(phone, pausedMsg);
+  // Carga config + memoria en paralelo (1 query a bot_config en lugar de 4 secuenciales)
+  const [cfg, memory] = await Promise.all([getAllConfig(), loadMemory(conv.id)]);
+
+  if ((cfg.bot_paused_global || 'false') === 'true') {
+    await sendTextMessage(phone, cfg.paused_message || 'Estamos fuera de servicio temporalmente. Te contactaremos pronto.');
     return;
   }
 
-  // Horarios de atención
-  const businessHours = await getConfig('business_hours');
-  if (businessHours && !isWithinBusinessHours(businessHours)) {
-    const offMsg = await getConfig('off_hours_message', 'Gracias por escribirnos. Nuestro horario es Lunes-Jueves 9am-5pm. Te responderemos pronto.');
-    await sendTextMessage(phone, offMsg);
+  if (cfg.business_hours && !isWithinBusinessHours(cfg.business_hours)) {
+    await sendTextMessage(phone, cfg.off_hours_message || 'Gracias por escribirnos. Nuestro horario es Lunes-Jueves 9am-5pm. Te responderemos pronto.');
     return;
   }
 
-  // Palabras clave para handoff automático
-  const keywordsRaw = await getConfig('handoff_keywords', '');
-  if (keywordsRaw) {
-    const keywords = keywordsRaw.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
-    const textLower = text.toLowerCase();
-    if (keywords.some(k => textLower.includes(k))) {
+  if (cfg.handoff_keywords) {
+    const keywords = cfg.handoff_keywords.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+    if (keywords.some(k => text.toLowerCase().includes(k))) {
       await supabase.from('conversations').update({ bot_paused: 1, updated_at: new Date().toISOString() }).eq('id', conv.id);
       await sendTextMessage(phone, 'Un momento, te estoy conectando con un asesor humano.');
       return;
     }
   }
 
-  const [memory, systemPromptBase] = await Promise.all([loadMemory(conv.id), getSystemPrompt()]);
-  const systemPrompt = systemPromptBase + buildMemoryBlock(memory);
+  const systemPrompt = buildSystemPrompt(cfg.system_prompt) + buildMemoryBlock(memory);
   const msgs = (history || []).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.message }));
   msgs.push({ role: 'user', content: text });
 
@@ -329,8 +355,8 @@ app.post('/api/conversations/:id/send', async (req, res) => {
   try {
     const { data: conv } = await supabase.from('conversations').select('*').eq('id', parseInt(req.params.id)).single();
     if (!conv) return res.status(404).json({ error: 'Not found' });
-    await sendTextMessage(conv.phone_number, req.body.message);
-    await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'agent', message: req.body.message }]);
+    const waId = await sendTextMessage(conv.phone_number, req.body.message);
+    await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'agent', message: req.body.message, wa_message_id: waId, delivery_status: 'sent' }]);
     res.json({ success: true });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
