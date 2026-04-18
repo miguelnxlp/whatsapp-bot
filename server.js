@@ -88,7 +88,7 @@ CONTRATO REALIDAD - SOLO estos 3 elementos:
 3. REMUNERACIÓN: Te pagan periódicamente`;
 
           const response = await openai.chat.completions.create({
-            model: 'gpt-4.1-nano',
+            model: 'gpt-4o-mini',
             messages: [
               { role: 'system', content: systemPrompt },
               ...msgs
@@ -100,7 +100,7 @@ CONTRATO REALIDAD - SOLO estos 3 elementos:
 
           await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText }]);
 
-          await axios.post(`https://graph.facebook.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+          await axios.post(`https://graph.instagram.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
             messaging_product: 'whatsapp',
             to: phone,
             type: 'text',
@@ -157,7 +157,7 @@ app.post('/api/conversations/:id/send', async (req, res) => {
     const { data: conv } = await supabase.from('conversations').select('*').eq('id', parseInt(req.params.id)).single();
     if (!conv) return res.status(404).json({ error: 'Not found' });
 
-    await axios.post(`https://graph.facebook.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+    await axios.post(`https://graph.instagram.com/v18.0/${process.env.WHATSAPP_PHONE_ID}/messages`, {
       messaging_product: 'whatsapp',
       to: conv.phone_number,
       type: 'text',
