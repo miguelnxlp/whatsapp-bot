@@ -18,25 +18,21 @@ const DEFAULT_PROMPT = `Eres un asesor legal virtual especializado ÚNICAMENTE e
 - Si el usuario pregunta sobre otros temas legales, responde: "Disculpa, solo estoy especializado en temas de contrato realidad. ¿Hay algo sobre tu situación laboral actual que quieras consultar?"
 - NO des conceptos jurídicos genéricos
 - NO hables sobre otros tipos de contrato, derecho penal, civil, etc.
-- Si no es sobre contrato realidad, redirige amablemente
 
-TONO:
-- Formal pero cercano y empático
-- Humano y conversacional
-- Profesional pero accesible
+TONO: Formal pero cercano y empático. Humano y conversacional. Profesional pero accesible.
 
-FLUJO DE CONVERSACIÓN:
+FLUJO:
 1. Saluda y pregunta el nombre si no lo sabes
-2. Diagnostica si hay contrato realidad (pregunta sobre: horario fijo, jefe, subordinación, pago)
+2. Diagnostica si hay contrato realidad (horario fijo, jefe, subordinación, pago)
 3. Explica sus derechos SI detectas contrato realidad
-4. Ofrece agendar cita con abogado — cuando lo hagas, incluye al final exactamente: [OFRECER_CITA]
-5. Si es necesario, pide datos para agendar
+4. Ofrece agendar cita — incluye [OFRECER_CITA] al final cuando lo hagas
+5. Pide datos para agendar si es necesario
 
 INFORMACIÓN ACTUAL:
 - Fecha de hoy: {{today}}
 - Horarios disponibles: Lunes-Jueves, 9:00 AM - 5:00 PM
 
-CONTRATO REALIDAD - SOLO estos 3 elementos:
+CONTRATO REALIDAD:
 1. PRESTACIÓN PERSONAL: Tú personalmente haces el trabajo
 2. SUBORDINACIÓN: Alguien te da órdenes, controla horarios
 3. REMUNERACIÓN: Te pagan periódicamente`;
@@ -44,56 +40,71 @@ CONTRATO REALIDAD - SOLO estos 3 elementos:
 app.use(express.json());
 app.use(express.static('public'));
 
-// ── HELPERS ────────────────────────────────────────────────────────────────
+// ── CONFIG HELPERS ─────────────────────────────────────────────────────────
+
+async function getConfig(key, fallback = null) {
+  try {
+    const { data } = await supabase.from('bot_config').select('value').eq('key', key).single();
+    return data?.value ?? fallback;
+  } catch { return fallback; }
+}
+
+async function setConfig(key, value) {
+  await supabase.from('bot_config').upsert({ key, value, updated_at: new Date().toISOString() });
+}
 
 async function getSystemPrompt() {
-  try {
-    const { data } = await supabase.from('bot_config').select('value').eq('key', 'system_prompt').single();
-    const prompt = data?.value || DEFAULT_PROMPT;
-    const today = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    return prompt.replace('{{today}}', today);
-  } catch {
-    const today = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    return DEFAULT_PROMPT.replace('{{today}}', today);
-  }
+  const prompt = await getConfig('system_prompt', DEFAULT_PROMPT);
+  const today = new Date().toLocaleDateString('es-CO', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  return prompt.replace('{{today}}', today);
 }
 
-async function transcribeAudio(mediaId) {
-  const mediaInfo = await axios.get(`https://graph.facebook.com/v25.0/${mediaId}`, { headers: WA_HEADERS() });
-  const audioRes = await axios.get(mediaInfo.data.url, { headers: WA_HEADERS(), responseType: 'arraybuffer' });
-  const buffer = Buffer.from(audioRes.data);
-  const { toFile } = await import('openai/uploads');
-  const file = await toFile(buffer, 'audio.ogg', { type: 'audio/ogg' });
-  const transcription = await openai.audio.transcriptions.create({ file, model: 'gpt-4o-mini-transcribe', language: 'es' });
-  return transcription.text;
+function isWithinBusinessHours(hoursConfig) {
+  if (!hoursConfig) return true;
+  try {
+    const hours = JSON.parse(hoursConfig);
+    const now = new Date();
+    const day = now.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    const slot = hours[day];
+    if (!slot || !slot.enabled) return false;
+    const [startH, startM] = slot.start.split(':').map(Number);
+    const [endH, endM] = slot.end.split(':').map(Number);
+    const current = now.getHours() * 60 + now.getMinutes();
+    return current >= startH * 60 + startM && current <= endH * 60 + endM;
+  } catch { return true; }
 }
+
+// ── WA HELPERS ─────────────────────────────────────────────────────────────
 
 async function sendTextMessage(phone, text) {
   return axios.post(`${WA_API}/messages`, {
-    messaging_product: 'whatsapp',
-    to: phone,
-    type: 'text',
-    text: { body: text },
+    messaging_product: 'whatsapp', to: phone, type: 'text', text: { body: text },
   }, { headers: WA_HEADERS() });
 }
 
 async function sendButtons(phone, bodyText) {
   return axios.post(`${WA_API}/messages`, {
-    messaging_product: 'whatsapp',
-    to: phone,
-    type: 'interactive',
+    messaging_product: 'whatsapp', to: phone, type: 'interactive',
     interactive: {
-      type: 'button',
-      body: { text: bodyText },
-      action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'agendar_si', title: '📅 Sí, quiero agendar' } },
-          { type: 'reply', reply: { id: 'agendar_no', title: 'No por ahora' } },
-        ],
-      },
+      type: 'button', body: { text: bodyText },
+      action: { buttons: [
+        { type: 'reply', reply: { id: 'agendar_si', title: '📅 Sí, quiero agendar' } },
+        { type: 'reply', reply: { id: 'agendar_no', title: 'No por ahora' } },
+      ]},
     },
   }, { headers: WA_HEADERS() });
 }
+
+async function transcribeAudio(mediaId) {
+  const mediaInfo = await axios.get(`https://graph.facebook.com/v25.0/${mediaId}`, { headers: WA_HEADERS() });
+  const audioRes = await axios.get(mediaInfo.data.url, { headers: WA_HEADERS(), responseType: 'arraybuffer' });
+  const { toFile } = await import('openai/uploads');
+  const file = await toFile(Buffer.from(audioRes.data), 'audio.ogg', { type: 'audio/ogg' });
+  const transcription = await openai.audio.transcriptions.create({ file, model: 'gpt-4o-mini-transcribe', language: 'es' });
+  return transcription.text;
+}
+
+// ── MEMORY HELPERS ─────────────────────────────────────────────────────────
 
 async function loadMemory(conversationId) {
   const { data } = await supabase.from('user_memory').select('*').eq('conversation_id', conversationId).single();
@@ -108,7 +119,7 @@ function buildMemoryBlock(memory) {
   if (memory.situacion) lines.push(`- Situación: ${memory.situacion}`);
   if (memory.notas) lines.push(`- Notas adicionales: ${memory.notas}`);
   if (!lines.length) return '';
-  return `\nMEMORIA DEL USUARIO (usa esta info, no la vuelvas a preguntar):\n${lines.join('\n')}\n`;
+  return `\nMEMORIA DEL USUARIO (no vuelvas a preguntar estos datos):\n${lines.join('\n')}\n`;
 }
 
 async function updateMemory(conversationId, conversationText) {
@@ -116,75 +127,88 @@ async function updateMemory(conversationId, conversationText) {
     const res = await openai.chat.completions.create({
       model: 'gpt-4.1-nano',
       messages: [
-        {
-          role: 'system',
-          content: `Extrae información clave de esta conversación sobre contrato realidad.
-Responde SOLO con JSON válido con estas claves (null si no se menciona):
-{ "nombre": string|null, "empresa": string|null, "situacion": string|null, "notas": string|null }
-- nombre: nombre del usuario
-- empresa: empresa o empleador mencionado
-- situacion: resumen breve de su caso laboral (max 100 chars)
-- notas: cualquier dato extra relevante (horario, tiempo trabajando, salario, etc.)`
-        },
+        { role: 'system', content: `Extrae info clave. Responde SOLO JSON: { "nombre": string|null, "empresa": string|null, "situacion": string|null, "notas": string|null }` },
         { role: 'user', content: conversationText }
       ],
-      max_tokens: 200,
-      temperature: 0,
+      max_tokens: 150, temperature: 0,
     });
-
     const raw = res.choices[0].message.content.replace(/```json|```/g, '').trim();
     const extracted = JSON.parse(raw);
-
     const { data: existing } = await supabase.from('user_memory').select('*').eq('conversation_id', conversationId).single();
-    const merged = {
+    await supabase.from('user_memory').upsert({
       conversation_id: conversationId,
       nombre: extracted.nombre || existing?.nombre || null,
       empresa: extracted.empresa || existing?.empresa || null,
       situacion: extracted.situacion || existing?.situacion || null,
       notas: extracted.notas || existing?.notas || null,
       updated_at: new Date().toISOString(),
-    };
-
-    await supabase.from('user_memory').upsert(merged);
-  } catch (e) {
-    console.error('Memory update error:', e.message);
-  }
+    });
+  } catch (e) { console.error('Memory error:', e.message); }
 }
+
+// ── CONVERSATION HELPERS ───────────────────────────────────────────────────
 
 async function getOrCreateConversation(phone) {
   let { data: conv, error } = await supabase.from('conversations').select('*').eq('phone_number', phone).single();
   if (error || !conv) {
-    const { data: newConv, error: insertError } = await supabase.from('conversations').insert([{ phone_number: phone }]).select().single();
+    const { data: newConv, error: insertError } = await supabase.from('conversations').insert([{ phone_number: phone, status: 'active' }]).select().single();
     if (insertError) throw insertError;
     conv = newConv;
+
+    const welcome = await getConfig('welcome_message');
+    if (welcome) {
+      await sendTextMessage(phone, welcome);
+      await supabase.from('messages').insert([{ conversation_id: newConv.id, sender: 'assistant', message: welcome }]);
+    }
   }
   return conv;
 }
 
 async function processMessage(phone, text, conv, messageType = 'text') {
-  const { data: history } = await supabase.from('messages').select('*').eq('conversation_id', conv.id).order('created_at').limit(10);
-  const displayText = messageType === 'audio' ? `🎤 [Audio transcrito]: ${text}` : text;
+  const { data: history } = await supabase.from('messages').select('*').eq('conversation_id', conv.id).order('created_at').limit(15);
+  const displayText = messageType === 'audio' ? `🎤 [Audio]: ${text}` : text;
   await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'user', message: displayText }]);
   await supabase.from('conversations').update({ updated_at: new Date().toISOString() }).eq('id', conv.id);
 
   if (conv.bot_paused) return;
 
-  const [memory, systemPromptBase] = await Promise.all([
-    loadMemory(conv.id),
-    getSystemPrompt(),
-  ]);
+  // Pausa global
+  const globalPaused = await getConfig('bot_paused_global', 'false');
+  if (globalPaused === 'true') {
+    const pausedMsg = await getConfig('paused_message', 'Estamos fuera de servicio temporalmente. Te contactaremos pronto.');
+    await sendTextMessage(phone, pausedMsg);
+    return;
+  }
 
-  const memoryBlock = buildMemoryBlock(memory);
-  const systemPrompt = systemPromptBase + memoryBlock;
+  // Horarios de atención
+  const businessHours = await getConfig('business_hours');
+  if (businessHours && !isWithinBusinessHours(businessHours)) {
+    const offMsg = await getConfig('off_hours_message', 'Gracias por escribirnos. Nuestro horario es Lunes-Jueves 9am-5pm. Te responderemos pronto.');
+    await sendTextMessage(phone, offMsg);
+    return;
+  }
 
+  // Palabras clave para handoff automático
+  const keywordsRaw = await getConfig('handoff_keywords', '');
+  if (keywordsRaw) {
+    const keywords = keywordsRaw.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+    const textLower = text.toLowerCase();
+    if (keywords.some(k => textLower.includes(k))) {
+      await supabase.from('conversations').update({ bot_paused: 1, updated_at: new Date().toISOString() }).eq('id', conv.id);
+      await sendTextMessage(phone, 'Un momento, te estoy conectando con un asesor humano.');
+      return;
+    }
+  }
+
+  const [memory, systemPromptBase] = await Promise.all([loadMemory(conv.id), getSystemPrompt()]);
+  const systemPrompt = systemPromptBase + buildMemoryBlock(memory);
   const msgs = (history || []).map(m => ({ role: m.sender === 'user' ? 'user' : 'assistant', content: m.message }));
   msgs.push({ role: 'user', content: text });
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4.1-nano',
     messages: [{ role: 'system', content: systemPrompt }, ...msgs],
-    max_tokens: 350,
-    temperature: 0.7,
+    max_tokens: 350, temperature: 0.7,
   });
 
   let aiText = response.choices[0].message.content;
@@ -192,14 +216,8 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   aiText = aiText.replace('[OFRECER_CITA]', '').trim();
 
   await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText }]);
+  offerCita ? await sendButtons(phone, aiText) : await sendTextMessage(phone, aiText);
 
-  if (offerCita) {
-    await sendButtons(phone, aiText);
-  } else {
-    await sendTextMessage(phone, aiText);
-  }
-
-  // Actualizar memoria en background (no bloquea la respuesta)
   const allText = [...msgs.map(m => `${m.role}: ${m.content}`), `assistant: ${aiText}`].join('\n');
   updateMemory(conv.id, allText);
 }
@@ -207,11 +225,7 @@ async function processMessage(phone, text, conv, messageType = 'text') {
 // ── WEBHOOK ────────────────────────────────────────────────────────────────
 
 app.get('/webhook', (req, res) => {
-  if (req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) {
-    res.send(req.query['hub.challenge']);
-  } else {
-    res.sendStatus(403);
-  }
+  req.query['hub.verify_token'] === process.env.VERIFY_TOKEN ? res.send(req.query['hub.challenge']) : res.sendStatus(403);
 });
 
 app.post('/webhook', async (req, res) => {
@@ -220,76 +234,64 @@ app.post('/webhook', async (req, res) => {
     const messages = req.body.entry?.[0]?.changes?.[0]?.value?.messages || [];
     for (const msg of messages) {
       const phone = msg.from;
-      console.log(`📱 Mensaje de ${phone} tipo: ${msg.type}`);
-
       try {
         const conv = await getOrCreateConversation(phone);
-
         if (msg.type === 'text') {
           await processMessage(phone, msg.text.body, conv, 'text');
-
         } else if (msg.type === 'audio' || msg.type === 'voice') {
-          console.log(`🎤 Transcribiendo audio de ${phone}...`);
           await sendTextMessage(phone, '🎤 Recibí tu audio, un momento...');
           const transcription = await transcribeAudio(msg.audio?.id || msg.voice?.id);
-          console.log(`📝 Transcripción: ${transcription}`);
           await processMessage(phone, transcription, conv, 'audio');
-
         } else if (msg.type === 'interactive') {
-          const buttonId = msg.interactive?.button_reply?.id;
-          const buttonTitle = msg.interactive?.button_reply?.title;
-          if (buttonId === 'agendar_si') {
-            await processMessage(phone, 'Sí, quiero agendar una cita', conv, 'text');
-          } else if (buttonId === 'agendar_no') {
-            await processMessage(phone, 'No quiero agendar por ahora', conv, 'text');
-          } else {
-            await processMessage(phone, buttonTitle || 'Respuesta seleccionada', conv, 'text');
-          }
+          const id = msg.interactive?.button_reply?.id;
+          const text = id === 'agendar_si' ? 'Sí, quiero agendar una cita' : id === 'agendar_no' ? 'No quiero agendar por ahora' : msg.interactive?.button_reply?.title;
+          await processMessage(phone, text, conv, 'text');
         }
       } catch (err) {
-        console.error(`❌ Error procesando mensaje de ${phone}:`, err.response?.data || err.message);
+        console.error(`❌ Error ${phone}:`, err.response?.data || err.message);
       }
     }
-  } catch (error) {
-    console.error('Webhook error:', error);
-  }
+  } catch (error) { console.error('Webhook error:', error); }
 });
 
-// ── APIS CONVERSACIONES ────────────────────────────────────────────────────
+// ── CONVERSACIONES ─────────────────────────────────────────────────────────
 
 app.get('/api/conversations', async (req, res) => {
   try {
-    const { data: conversations } = await supabase
-      .from('conversations')
-      .select('*, messages(count)')
-      .order('updated_at', { ascending: false });
-    const result = (conversations || []).map(c => ({
-      ...c,
-      message_count: c.messages?.[0]?.count || 0,
-      messages: undefined,
-    }));
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    const { status } = req.query;
+    let query = supabase.from('conversations').select('*, messages(count)').order('updated_at', { ascending: false });
+    if (status && status !== 'all') query = query.eq('status', status);
+    const { data } = await query;
+    res.json((data || []).map(c => ({ ...c, message_count: c.messages?.[0]?.count || 0, messages: undefined })));
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.get('/api/conversations/:id/messages', async (req, res) => {
   try {
-    const { data: messages } = await supabase.from('messages').select('*').eq('conversation_id', parseInt(req.params.id)).order('created_at');
-    res.json(messages || []);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    const { data } = await supabase.from('messages').select('*').eq('conversation_id', parseInt(req.params.id)).order('created_at');
+    res.json(data || []);
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.post('/api/conversations/:id/pause', async (req, res) => {
   try {
     await supabase.from('conversations').update({ bot_paused: req.body.paused ? 1 : 0 }).eq('id', parseInt(req.params.id));
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/conversations/:id/resolve', async (req, res) => {
+  try {
+    await supabase.from('conversations').update({ status: 'resolved', resolved_at: new Date().toISOString() }).eq('id', parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/conversations/:id/tags', async (req, res) => {
+  try {
+    await supabase.from('conversations').update({ tags: req.body.tags }).eq('id', parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.post('/api/conversations/:id/send', async (req, res) => {
@@ -299,58 +301,116 @@ app.post('/api/conversations/:id/send', async (req, res) => {
     await sendTextMessage(conv.phone_number, req.body.message);
     await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'agent', message: req.body.message }]);
     res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/reports', async (req, res) => {
-  try {
-    const [{ count: totalConversations }, { count: totalMessages }] = await Promise.all([
-      supabase.from('conversations').select('*', { count: 'exact', head: true }),
-      supabase.from('messages').select('*', { count: 'exact', head: true }),
-    ]);
-    res.json({ totalConversations: totalConversations || 0, totalMessages: totalMessages || 0 });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.get('/api/conversations/:id/memory', async (req, res) => {
   try {
     const { data } = await supabase.from('user_memory').select('*').eq('conversation_id', parseInt(req.params.id)).single();
     res.json(data || {});
-  } catch (error) {
-    res.json({});
-  }
+  } catch { res.json({}); }
 });
 
-// ── API CONFIG PROMPT ──────────────────────────────────────────────────────
+// ── CONTACTOS ──────────────────────────────────────────────────────────────
 
-app.get('/api/config/prompt', async (req, res) => {
+app.get('/api/contacts', async (req, res) => {
   try {
-    const { data } = await supabase.from('bot_config').select('value').eq('key', 'system_prompt').single();
-    res.json({ prompt: data?.value || DEFAULT_PROMPT });
-  } catch {
-    res.json({ prompt: DEFAULT_PROMPT });
-  }
+    const { data } = await supabase.from('user_memory').select('*, conversations(phone_number, updated_at, status, bot_paused)').order('updated_at', { ascending: false });
+    res.json(data || []);
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-app.post('/api/config/prompt', async (req, res) => {
+// ── MÉTRICAS ───────────────────────────────────────────────────────────────
+
+app.get('/api/metrics', async (req, res) => {
   try {
-    const { prompt } = req.body;
-    if (!prompt) return res.status(400).json({ error: 'prompt requerido' });
-    const { error } = await supabase.from('bot_config').upsert({ key: 'system_prompt', value: prompt, updated_at: new Date().toISOString() });
-    if (error) {
-      console.error('❌ Error guardando prompt:', error);
-      return res.status(500).json({ error: error.message });
+    const [{ count: totalConvs }, { count: totalMsgs }, { data: recent }] = await Promise.all([
+      supabase.from('conversations').select('*', { count: 'exact', head: true }),
+      supabase.from('messages').select('*', { count: 'exact', head: true }),
+      supabase.from('messages').select('created_at').gte('created_at', new Date(Date.now() - 7 * 86400000).toISOString()),
+    ]);
+
+    const byDay = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000).toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric' });
+      byDay[d] = 0;
     }
-    console.log('✅ Prompt guardado correctamente');
+    (recent || []).forEach(m => {
+      const d = new Date(m.created_at).toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric' });
+      if (byDay[d] !== undefined) byDay[d]++;
+    });
+
+    const { count: resolved } = await supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('status', 'resolved');
+    const { count: withAgent } = await supabase.from('conversations').select('*', { count: 'exact', head: true }).eq('bot_paused', 1);
+
+    res.json({
+      totalConversations: totalConvs || 0,
+      totalMessages: totalMsgs || 0,
+      resolved: resolved || 0,
+      withAgent: withAgent || 0,
+      msgsByDay: byDay,
+    });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ── QUICK REPLIES ──────────────────────────────────────────────────────────
+
+app.get('/api/quick-replies', async (req, res) => {
+  try {
+    const { data } = await supabase.from('quick_replies').select('*').order('created_at');
+    res.json(data || []);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/quick-replies', async (req, res) => {
+  try {
+    const { title, message } = req.body;
+    if (!title || !message) return res.status(400).json({ error: 'title y message requeridos' });
+    const { data } = await supabase.from('quick_replies').insert([{ title, message }]).select().single();
+    res.json(data);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.delete('/api/quick-replies/:id', async (req, res) => {
+  try {
+    await supabase.from('quick_replies').delete().eq('id', parseInt(req.params.id));
     res.json({ success: true });
-  } catch (error) {
-    console.error('❌ Error guardando prompt:', error.message);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ── CONFIG ─────────────────────────────────────────────────────────────────
+
+app.get('/api/config', async (req, res) => {
+  try {
+    const { data } = await supabase.from('bot_config').select('*');
+    const config = {};
+    (data || []).forEach(row => { config[row.key] = row.value; });
+    res.json(config);
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+app.post('/api/config', async (req, res) => {
+  try {
+    const entries = Object.entries(req.body);
+    for (const [key, value] of entries) {
+      await setConfig(key, value);
+    }
+    res.json({ success: true });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+
+// ── EXPORT CSV ─────────────────────────────────────────────────────────────
+
+app.get('/api/conversations/export/csv', async (req, res) => {
+  try {
+    const { data: convs } = await supabase.from('conversations').select('*').order('updated_at', { ascending: false });
+    const rows = [['ID', 'Teléfono', 'Estado', 'Bot Pausado', 'Tags', 'Creado', 'Actualizado']];
+    (convs || []).forEach(c => rows.push([c.id, c.phone_number, c.status, c.bot_paused ? 'Sí' : 'No', c.tags || '', c.created_at, c.updated_at]));
+    const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="conversaciones.csv"');
+    res.send(csv);
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 const PORT = process.env.PORT || 3000;
