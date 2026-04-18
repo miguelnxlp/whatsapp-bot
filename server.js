@@ -264,7 +264,11 @@ async function processMessage(phone, text, conv, messageType = 'text') {
   aiText = aiText.replace('[OFRECER_CITA]', '').trim();
 
   const waId = offerCita ? await sendButtons(phone, aiText) : await sendTextMessage(phone, aiText);
-  await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText, wa_message_id: waId, delivery_status: 'sent' }]);
+  const { error: insertErr } = await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText, wa_message_id: waId, delivery_status: 'sent' }]);
+  if (insertErr) {
+    console.error('Insert con columnas nuevas falló:', insertErr.message, '— reintentando sin ellas');
+    await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'assistant', message: aiText }]);
+  }
 
   const allText = [...msgs.map(m => `${m.role}: ${m.content}`), `assistant: ${aiText}`].join('\n');
   updateMemory(conv.id, allText);
@@ -356,7 +360,8 @@ app.post('/api/conversations/:id/send', async (req, res) => {
     const { data: conv } = await supabase.from('conversations').select('*').eq('id', parseInt(req.params.id)).single();
     if (!conv) return res.status(404).json({ error: 'Not found' });
     const waId = await sendTextMessage(conv.phone_number, req.body.message);
-    await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'agent', message: req.body.message, wa_message_id: waId, delivery_status: 'sent' }]);
+    const { error: agentErr } = await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'agent', message: req.body.message, wa_message_id: waId, delivery_status: 'sent' }]);
+    if (agentErr) await supabase.from('messages').insert([{ conversation_id: conv.id, sender: 'agent', message: req.body.message }]);
     res.json({ success: true });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
